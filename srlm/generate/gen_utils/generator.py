@@ -2,11 +2,11 @@
 import re
 import json
 import uuid
+import time
 import pandas as pd
-from utils.engine import GenEngine
-from utils.helper import *
+from gen_utils.engine import GenEngine
+from gen_utils.helper import *
 from transformers import TextStreamer
-
 
 class Generator(GenEngine):
     
@@ -55,11 +55,11 @@ class Generator(GenEngine):
             print(f"{inputs}")
             print(">"*80)
             model_inputs = self.tokenizer(inputs, return_tensors="pt").to("cuda")
+            
         elif isinstance(inputs, list):
             """
             inputs = [
                 {"role": "user", "content": prompt},
-                # {"role": "assistant", "content": ""},
                     ]       
             """
 
@@ -146,7 +146,7 @@ class Generator(GenEngine):
             for idx in range(4):
                 print("-----------------------------------------------------------------------")
                 print(f"Processing prompt {index + 1}, completion {idx + 1}")
-                inputs = [{"role": "user", "content": prompt},]
+                inputs = format_chat(prompt)
                 answer = self.sample(inputs, generate_settings)
                 completion = filter_completion(answer)
 
@@ -264,5 +264,146 @@ class Generator(GenEngine):
         print('Generating preference finished.')
 
         
-
+    def gemini_as_judge(self, input_path, output_path):
+        import google.generativeai as genai
+        from google.colab import userdata
+        # Or use `os.getenv('GOOGLE_API_KEY')` to fetch an environment variable.
+        GOOGLE_API_KEY=userdata.get('GOOGLE_API_KEY')
     
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel('gemini-1.0-pro-latest')
+
+
+        df = pd.read_json(path_or_buf=input_path, lines=True)
+        pattern = r"[Ss]core: ([0-5])"
+        results = []
+        start = 0
+        for index, row in df.iterrows():
+            if index < start:
+                continue
+            prompt_id = row['prompt_id']
+            prompt = row['prompt']
+            completion = row['completion']
+            buf = {}
+            print("-============================="+ str(index))
+            try:
+                for i in range(4):
+                    print("-------------------------")
+                    buf[str(i)] = {
+                        'content':completion[str(i)],
+                        'score':0,
+                        "reasoning":""
+                    }
+                    llm_as_a_judge_prompt = self.srlm_prompt.format(prompt=prompt,response=completion[str(i)])
+
+                    try:
+                        answer = model.generate_content(llm_as_a_judge_prompt)
+                    except Exception as e:
+                        print(f"error:{e}")
+                        print("try after 5s...")
+                        time.sleep(5)
+                        answer = model.generate_content(llm_as_a_judge_prompt)
+                        print("continue...")
+
+                    matches = re.findall(pattern, answer.text)
+                    generated_score = int(matches[0]) if matches else -1
+                    print("Found Score: ", generated_score)
+                    buf[str(i)]['score'] = generated_score
+                    buf[str(i)]['reasoning'] = answer.text
+                    time.sleep(1.3)
+
+                results.append({
+                    "prompt_id": prompt_id,
+                    "prompt": prompt,
+                    "completion": buf,
+                })
+            except Exception as e:
+                continue
+                        # save every time
+            df_results = pd.DataFrame(results)
+            df_results.to_json(output_path, orient='records', lines=True)
+
+        print('Generating scores finished.')
+
+
+    def gemini_as_instructor(self, input_path, output_path):
+        generate_settings = {
+            "top_p": 0.9,
+            "temperature": 0.7,
+            "max_new_tokens": 256
+        }
+
+        import google.generativeai as genai
+        from google.colab import userdata
+        # Or use `os.getenv('GOOGLE_API_KEY')` to fetch an environment variable.
+        GOOGLE_API_KEY=userdata.get('GOOGLE_API_KEY')
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel('gemini-1.0-pro-latest')
+
+        df_prompts = pd.read_json(path_or_buf=input_path, lines=True)
+        df_prompts = df_prompts.sample(frac=1).reset_index(drop=True)# shuffle the dataframe
+
+        completions = []
+        for index, row in df_prompts.iterrows():
+            print("============================================================================")
+            print(f"Processing prompt {index + 1} of {len(df_prompts)}")
+
+            prompt = row['prompt']
+            prompt_id = row['prompt_id']
+            buf = {"prompt_id": prompt_id, "prompt": prompt, "completion": {'teacher':None, 'studnet':None}}
+            
+            ## teacher 
+            # only sample once as instructor piece
+            print("-----------------------------------------------------------------------")
+            print(f"Processing prompt {index + 1}, Teacher role:")
+            inputs = format_chat(prompt)
+            answer = model.generate_content(inputs)
+            completion = filter_completion(answer)
+
+            print("\n\n")
+            print(f"Extracted completion: {completion}")
+            buf["completion"]['teacher'] = completion
+
+            ## student
+            print("-----------------------------------------------------------------------")
+            print(f"Processing prompt {index + 1}, Student role:")
+            inputs = format_chat(prompt)
+            answer = self.sample(inputs, generate_settings)
+            completion = filter_completion(answer)
+
+            print("\n\n")
+            print(f"Extracted completion: {completion}")
+            buf["completion"]['student'] = completion
+
+
+            completions.append(buf)
+
+            df_completions = pd.DataFrame(completions)
+            df_completions.to_json(output_path, orient='records', lines=True)
+
+        print('Generating responses finished.')
+        return df_completions.head()
+    
+    def gemini_preference(input_path, output_path):
+        gen_data = []
+        with open(input_path, "r") as f:
+            for line in f:
+                row = json.loads(line)
+                gen_data.append(row)
+
+        pairs = []
+        for row in gen_data:
+
+            pairs.append({
+                "prompt_id": row['prompt_id'],
+                "prompt": row['prompt'],
+                "chosen": row['completion']['teacher'],
+                "rejected": row['completion']['student'],
+            })
+
+
+
+        with open(output_path, "w") as f:
+            for line in pairs:
+                f.write(json.dumps(line) + "\n")
+        print('Generating preference finished.')
