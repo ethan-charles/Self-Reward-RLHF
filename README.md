@@ -2,6 +2,11 @@
 
 Implement for [Self-Rewarding Language Model paper](https://arxiv.org/abs/2401.10020) from MetaAI.
 
+Our paper is Here! [Exploring Self-Learning and Teacher-Guided
+Paradigms in Language Model Alignment](https://github.com/ethan-charles/Self-Reward-RLHF/blob/main/Exploring_Self-Learning_and_Teacher-Guided_Paradigms_in_Language_Model_Alignment.pdf)
+
+[](https://github.com/ethan-charles/Self-Reward-RLHF/blob/main/EECS%20598%20Poster_v2.png)
+
 ### Advanced method for small language model:
 
  - Teacher reward llm
